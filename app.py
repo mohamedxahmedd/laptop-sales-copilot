@@ -449,21 +449,64 @@ if "last_req" in st.session_state:
                     st.caption(f"المتاح: {int(row['qty'])}")
 
                 st.markdown("#### 📲 Message للعميل")
-                c1, c2 = st.columns([1.2, 2])
-                with c1:
-                    style_label = st.selectbox("الأسلوب", ["جذابة وبيعية", "مختصرة", "تقنية", "ودية"], key=f"style_{idx}", label_visibility="collapsed")
-                styles = {"جذابة وبيعية":"attractive","مختصرة":"short","تقنية":"technical","ودية":"friendly"}
-                with c2:
-                    if st.button("✨ اعمل Message بروفيشنال", key=f"msgbtn_{idx}", use_container_width=True, type="primary" if primary else "secondary"):
-                        with st.spinner("بربط كل مواصفة بفائدتها للعميل..."):
-                            st.session_state.sales_messages[f"msg_{idx}"] = generate_sales_message(
-                                row, req, message_style=styles[style_label],
-                                shop_name=st.session_state.get("shop_name", "")
-                            )
+                st.caption("الرسالة بتتغير حسب اللي العميل قاله فعلًا؛ لو قال مواصفة بس، مش هنفترض استخدام من عندنا.")
 
-                if f"msg_{idx}" in st.session_state.get("sales_messages", {}):
-                    st.code(st.session_state.sales_messages[f"msg_{idx}"], language=None)
-                    st.caption("استخدم علامة Copy من المربع وابعتها للعميل.")
+                c1, c2 = st.columns([1.25, 2.4])
+                with c1:
+                    style_label = st.selectbox(
+                        "الأسلوب",
+                        ["جذابة وبيعية", "مختصرة", "تقنية", "ودية"],
+                        key=f"style_{idx}",
+                        label_visibility="collapsed",
+                    )
+
+                styles = {
+                    "جذابة وبيعية": "attractive",
+                    "مختصرة": "short",
+                    "تقنية": "technical",
+                    "ودية": "friendly",
+                }
+
+                msg_key = f"msg_{idx}"
+
+                with c2:
+                    b1, b2 = st.columns(2)
+                    with b1:
+                        if st.button(
+                            "✨ جهّز Message",
+                            key=f"msgbtn_{idx}",
+                            use_container_width=True,
+                            type="primary" if primary else "secondary",
+                        ):
+                            with st.spinner("بكتب رسالة مناسبة لنوع طلب العميل..."):
+                                st.session_state.sales_messages[msg_key] = generate_sales_message(
+                                    row,
+                                    req,
+                                    message_style=styles[style_label],
+                                    shop_name=st.session_state.get("shop_name", ""),
+                                    previous_message="",
+                                )
+
+                    with b2:
+                        if st.button(
+                            "🔄 نسخة مختلفة",
+                            key=f"regen_{idx}",
+                            use_container_width=True,
+                            disabled=msg_key not in st.session_state.get("sales_messages", {}),
+                        ):
+                            with st.spinner("بعمل صياغة مختلفة تمامًا..."):
+                                old_message = st.session_state.sales_messages.get(msg_key, "")
+                                st.session_state.sales_messages[msg_key] = generate_sales_message(
+                                    row,
+                                    req,
+                                    message_style=styles[style_label],
+                                    shop_name=st.session_state.get("shop_name", ""),
+                                    previous_message=old_message,
+                                )
+
+                if msg_key in st.session_state.get("sales_messages", {}):
+                    st.code(st.session_state.sales_messages[msg_key], language=None)
+                    st.caption("مش عاجباك الصياغة؟ دوس «نسخة مختلفة» وهتطلع Opening وترتيب وCTA مختلفين.")
 
         items = list(ranked.iterrows())
         first_idx, first_row = items[0]
