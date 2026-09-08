@@ -221,31 +221,65 @@ def _is_integrated_gpu(gpu: str) -> bool:
     t = (gpu or "").upper()
     return any(x in t for x in ["IRIS", "UHD", "RADEON GRAPHICS", "INTEGRATED", "UNKNOWN"])
 
+def canonical_gpu_name(value: str) -> str:
+    t = (value or "").upper().replace("NVIDIA", "").replace("GEFORCE", "").replace("QUADRO", "")
+    t = re.sub(r"\s+", " ", t).strip()
+    m = re.search(r"\bA\s*(500|1000|2000|3000|4000|4500|5000|5500)\b", t)
+    if m: return f"A{m.group(1)}"
+    m = re.search(r"\bRTX\s*(2050|2060|2070|2080|3050|3060|3070|3080|4050|4060|4070|4080|4090)\b", t)
+    if m: return f"RTX {m.group(1)}"
+    m = re.search(r"\b(P1000|T600|T1000|T1200|T2000)\b", t)
+    if m: return m.group(1)
+    return re.sub(r"[^A-Z0-9]+", "", t)
+
+def constraint_summary(req: Dict) -> list[str]:
+    parts = []
+    if req.get("gpu_model_exact"):
+        g = req["gpu_model_exact"]
+        if req.get("gpu_vram_exact_gb"): g += f" {int(req['gpu_vram_exact_gb'])}GB"
+        parts.append(f"GPU: {g}")
+    if req.get("ram_exact_gb"): parts.append(f"RAM: {int(req['ram_exact_gb'])}GB")
+    elif req.get("ram_min"): parts.append(f"RAM ≥ {int(req['ram_min'])}GB")
+    if req.get("storage_exact_gb"): parts.append(f"SSD: {int(req['storage_exact_gb'])}GB")
+    elif req.get("storage_min_gb"): parts.append(f"SSD ≥ {int(req['storage_min_gb'])}GB")
+    if req.get("screen_inches"): parts.append(f'Screen: {req["screen_inches"]:g}"')
+    if req.get("wants_touch"): parts.append("Touch")
+    if req.get("budget_max"): parts.append(f"Budget ≤ {money(req['budget_max'])}")
+    return parts
+
 def hard_filter(df: pd.DataFrame, req: Dict, use_stretch=False) -> pd.DataFrame:
     out = df[df["qty"] > 0].copy()
 
-    if req.get("ram_min"):
-        out = out[out["ram_gb"].fillna(0) >= int(req["ram_min"])]
+    if req.get("gpu_model_exact"):
+        wanted = canonical_gpu_name(req["gpu_model_exact"])
+        out = out[out["gpu"].map(canonical_gpu_name) == wanted]
+    if req.get("gpu_vram_exact_gb") is not None:
+        out = out[out["gpu_vram_gb"].fillna(-1).astype(float) == float(req["gpu_vram_exact_gb"])]
+
+    if req.get("ram_exact_gb") is not None:
+        out = out[out["ram_gb"].fillna(-1).astype(float) == float(req["ram_exact_gb"])]
+    elif req.get("ram_min"):
+        out = out[out["ram_gb"].fillna(0).astype(float) >= float(req["ram_min"])]
+
+    if req.get("storage_exact_gb") is not None:
+        out = out[out["storage_gb"].fillna(-1).astype(float) == float(req["storage_exact_gb"])]
+    elif req.get("storage_min_gb"):
+        out = out[out["storage_gb"].fillna(0).astype(float) >= float(req["storage_min_gb"])]
 
     if req.get("screen_inches"):
         target = float(req["screen_inches"])
         out = out[(out["screen_inches"].fillna(-99) - target).abs() <= 0.6]
-
     if req.get("wants_touch"):
         out = out[out["touch"] == True]
-
-    if req.get("wants_nvidia"):
+    if req.get("wants_nvidia") and not req.get("gpu_model_exact"):
         out = out[~out["gpu"].map(_is_integrated_gpu)]
 
     bmin = req.get("budget_min")
     bmax = req.get("budget_stretch") if use_stretch and req.get("budget_stretch") else req.get("budget_max")
-
-    # Price-less stock is not recommended when the customer gave a budget.
     if bmin is not None:
         out = out[out["price_egp"].notna() & (out["price_egp"] >= bmin)]
     if bmax is not None:
         out = out[out["price_egp"].notna() & (out["price_egp"] <= bmax)]
-
     return out
 
 def _price_score(price, budget_max, candidate_prices) -> float:
@@ -285,6 +319,8 @@ def rank_inventory(df: pd.DataFrame, req: Dict, top_n=5) -> Tuple[pd.DataFrame, 
         "used_stretch": False,
         "no_exact": False,
         "need_profile": infer_need_profile(req),
+        "strict_hardware": bool(req.get("strict_hardware")),
+        "explicit_constraints": req.get("explicit_constraints") or [],
     }
 
     filtered = hard_filter(df, req, use_stretch=False)
@@ -371,13 +407,36 @@ def rank_inventory(df: pd.DataFrame, req: Dict, top_n=5) -> Tuple[pd.DataFrame, 
     for col in scored.columns:
         filtered[col] = filtered.index.map(scored[col])
 
-    # Machines that meet the requirement are preferred; within them, fit then price/value.
-    filtered = filtered.sort_values(
+    ordered = filtered.sort_values(
         ["meets_needs", "match_score", "price_egp"],
         ascending=[False, False, True],
-    ).head(top_n).copy()
+    )
 
-    return filtered, meta
+    if req.get("strict_hardware"):
+        return ordered.head(min(top_n, 6)).copy(), meta
+
+    best = ordered.iloc[0]
+    picks = [ordered.index[0]]
+
+    others = ordered.drop(index=picks, errors="ignore")
+    if not others.empty and pd.notna(best["price_egp"]):
+        value_pool = others[
+            (others["fit_score"] >= float(best["fit_score"]) - 8) &
+            (others["price_egp"].notna()) &
+            (others["price_egp"] <= float(best["price_egp"]) * 0.90)
+        ]
+        if not value_pool.empty:
+            picks.append(value_pool.sort_values(["price_egp", "match_score"], ascending=[True, False]).index[0])
+
+    others = ordered.drop(index=picks, errors="ignore")
+    while len(picks) < min(3, top_n) and not others.empty:
+        idx = others.index[0]
+        if float(others.loc[idx, "match_score"]) < float(best["match_score"]) - 6:
+            break
+        picks.append(idx)
+        others = others.drop(index=[idx])
+
+    return ordered.loc[picks].copy(), meta
 
 def need_summary(req: Dict, need: Dict) -> str:
     cases = " + ".join(CASE_AR.get(c, c) for c in (req.get("use_cases") or ["general"]))

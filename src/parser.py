@@ -161,42 +161,132 @@ def detect_workload_level(text: str) -> str:
         return "light"
     return "balanced"
 
+GPU_PATTERNS = [
+    (r"\b(?:NVIDIA\s+)?RTX\s*A\s*(5500|5000|4500|4000|3000|2000|1000|500)\b", "A"),
+    (r"\b(?:NVIDIA\s+)?RTX\s*(2050|2060|2070|2080|3050|3060|3070|3080|4050|4060|4070|4080|4090)\b", "RTX"),
+    (r"\b(?:NVIDIA\s+)?(?:QUADRO\s+)?P\s*(1000)\b", "P"),
+    (r"\bT\s*(600|1000|1200|2000)\b", "T"),
+    (r"\bA\s*(5500|5000|4500|4000|3000|2000|1000|500)\b", "A"),
+]
+
+def _extract_gpu_exact(text: str):
+    t = clean_text(text).upper()
+    for pattern, prefix in GPU_PATTERNS:
+        m = re.search(pattern, t, flags=re.I)
+        if not m:
+            continue
+        n = m.group(1)
+        return (f"RTX {n}" if prefix == "RTX" else f"{prefix}{n}"), m.span()
+    return None, None
+
+def extract_explicit_constraints(text: str) -> Dict:
+    """Deterministic exact-spec extraction. These constraints override the LLM."""
+    t = _normalize(text)
+    upper = clean_text(text).upper()
+    out = {
+        "gpu_model_exact": None,
+        "gpu_vram_exact_gb": None,
+        "ram_exact_gb": None,
+        "ram_min": None,
+        "storage_exact_gb": None,
+        "storage_min_gb": None,
+        "strict_hardware": False,
+        "explicit_constraints": [],
+    }
+
+    gpu, span = _extract_gpu_exact(text)
+    if gpu:
+        out["gpu_model_exact"] = gpu
+        out["strict_hardware"] = True
+        out["explicit_constraints"].append(f"GPU = {gpu}")
+        near = upper[max(0, span[0]-12): min(len(upper), span[1]+24)]
+        vm = re.search(r"(?<!\d)(2|4|6|8|12|16|24)\s*G(?:B)?\b", near)
+        if vm:
+            out["gpu_vram_exact_gb"] = int(vm.group(1))
+            out["explicit_constraints"].append(f"VRAM = {int(vm.group(1))}GB")
+
+    ram_patterns = [
+        r"(?:ram|رام|رامات)\s*(?:=|:)?\s*(8|16|24|32|48|64|128)\s*(?:gb|g|جيجا)?",
+        r"(?<!\d)(8|16|24|32|48|64|128)\s*(?:gb|g|جيجا)?\s*(?:ram|رام|رامات)",
+    ]
+    for pat in ram_patterns:
+        m = re.search(pat, t, flags=re.I)
+        if m:
+            val = int(m.group(1))
+            if any(k in t for k in ["على الاقل", "علي الاقل", "at least", "minimum"]):
+                out["ram_min"] = val
+                out["explicit_constraints"].append(f"RAM ≥ {val}GB")
+            else:
+                out["ram_exact_gb"] = val
+                out["explicit_constraints"].append(f"RAM = {val}GB")
+            out["strict_hardware"] = True
+            break
+
+    storage_patterns = [
+        r"(?:ssd|هارد|storage)\s*(?:=|:)?\s*(128|256|512|1024|2048)\s*(?:gb|g|جيجا)?",
+        r"(?<!\d)(128|256|512|1024|2048)\s*(?:gb|g|جيجا)?\s*(?:ssd|هارد|storage)",
+    ]
+    for pat in storage_patterns:
+        m = re.search(pat, t, flags=re.I)
+        if m:
+            val = int(m.group(1))
+            if any(k in t for k in ["على الاقل", "علي الاقل", "at least", "minimum"]):
+                out["storage_min_gb"] = val
+                out["explicit_constraints"].append(f"SSD ≥ {val}GB")
+            else:
+                out["storage_exact_gb"] = val
+                out["explicit_constraints"].append(f"SSD = {val}GB")
+            out["strict_hardware"] = True
+            break
+
+    return out
+
+def _overlay_explicit(base: Dict, text: str) -> Dict:
+    explicit = extract_explicit_constraints(text)
+    out = dict(base)
+    for k, v in explicit.items():
+        if k == "explicit_constraints":
+            out[k] = list(v)
+        elif v is not None:
+            out[k] = v
+    if out.get("ram_exact_gb") is not None:
+        out["ram_min"] = None
+    return out
+
 def local_parse(text: str) -> Dict:
     t = _normalize(text)
     budget_min, budget_max, budget_stretch = extract_budget(text)
-    use_cases = detect_use_cases(text)
-    software = detect_software(text)
 
-    ram_min = None
-    m = re.search(r"(?:ram|رام)\s*(?:اقل|minimum|min|على الاقل|علي الاقل)?\s*(\d{1,3})", t)
-    if m:
-        ram_min = int(m.group(1))
-
-    screen = None
-    m = re.search(r"(\d{2}(?:\.\d)?)\s*(?:inch|بوصه|بوصة)", t)
-    if m:
-        screen = float(m.group(1))
-
-    wants_touch = any(k in t for k in ["touch", "تاتش", "لمس"])
-    wants_nvidia = any(k in t for k in ["nvidia", "نفيديا", "rtx", "cuda"])
-    prefers_lightweight = any(k in t for k in ["خفيف الوزن", "خفيف", "portable", "تنقل", "جامعة"])
-
-    return {
+    base = {
         "original_query": text,
-        "use_cases": use_cases,
-        "software": software,
+        "use_cases": detect_use_cases(text),
+        "software": detect_software(text),
         "workload_level": detect_workload_level(text),
         "budget_min": budget_min,
         "budget_max": budget_max,
         "budget_stretch": budget_stretch,
-        "ram_min": ram_min,
-        "screen_inches": screen,
-        "wants_touch": wants_touch,
-        "wants_nvidia": wants_nvidia,
-        "prefers_lightweight": prefers_lightweight,
+        "gpu_model_exact": None,
+        "gpu_vram_exact_gb": None,
+        "ram_exact_gb": None,
+        "ram_min": None,
+        "storage_exact_gb": None,
+        "storage_min_gb": None,
+        "screen_inches": None,
+        "wants_touch": any(k in t for k in ["touch", "تاتش", "لمس"]),
+        "wants_nvidia": any(k in t for k in ["nvidia", "نفيديا", "rtx", "cuda"]),
+        "prefers_lightweight": any(k in t for k in ["خفيف الوزن", "portable", "تنقل", "جامعة"]),
+        "strict_hardware": False,
+        "explicit_constraints": [],
         "notes": "",
         "parser": "local",
     }
+
+    sm = re.search(r"(\d{2}(?:\.\d)?)\s*(?:inch|بوصه|بوصة)", t)
+    if sm:
+        base["screen_inches"] = float(sm.group(1))
+        base["strict_hardware"] = True
+
+    return _overlay_explicit(base, text)
 
 def _coerce_json(raw: str) -> Dict:
     raw = raw.strip()
@@ -235,17 +325,25 @@ def _normalize_ai_data(data: Dict, text: str, parser_name: str) -> Dict:
         "budget_min": data.get("budget_min"),
         "budget_max": data.get("budget_max"),
         "budget_stretch": data.get("budget_stretch"),
+        "gpu_model_exact": data.get("gpu_model_exact"),
+        "gpu_vram_exact_gb": data.get("gpu_vram_exact_gb"),
+        "ram_exact_gb": data.get("ram_exact_gb"),
         "ram_min": data.get("ram_min"),
+        "storage_exact_gb": data.get("storage_exact_gb"),
+        "storage_min_gb": data.get("storage_min_gb"),
         "screen_inches": data.get("screen_inches"),
         "wants_touch": bool(data.get("wants_touch", False)),
         "wants_nvidia": bool(data.get("wants_nvidia", False)),
         "prefers_lightweight": bool(data.get("prefers_lightweight", False)),
+        "strict_hardware": bool(data.get("strict_hardware", False)),
+        "explicit_constraints": [],
         "notes": str(data.get("notes", "")),
         "parser": parser_name,
     }
 
-    for k in ("budget_min", "budget_max", "budget_stretch", "ram_min"):
-        v = out[k]
+    for k in ("budget_min", "budget_max", "budget_stretch", "gpu_vram_exact_gb",
+              "ram_exact_gb", "ram_min", "storage_exact_gb", "storage_min_gb"):
+        v = out.get(k)
         if v is not None:
             try:
                 out[k] = int(float(v))
@@ -257,7 +355,7 @@ def _normalize_ai_data(data: Dict, text: str, parser_name: str) -> Dict:
         except Exception:
             out["screen_inches"] = None
 
-    return out
+    return _overlay_explicit(out, text)
 
 def ai_parse(text: str) -> Dict:
     """
@@ -286,7 +384,9 @@ IMPORTANT:
   heavy = heavy projects/rendering/4K/many VMs
   extreme = explicitly very heavy/extreme
 - Preserve named software in `software`.
-- A stated budget is a constraint, NOT a signal to spend all of it.
+- A stated budget is a hard constraint, NOT a signal to spend all of it.
+- If the customer names exact hardware (example: "RTX A2000 8G", "RAM 32", "512 SSD"), treat it as a HARD constraint.
+- Never silently substitute another GPU, VRAM, RAM, or SSD.
 - Only set budget_stretch if the customer explicitly says they can increase the budget.
 
 Return ONLY valid JSON with exactly these keys:
@@ -297,11 +397,17 @@ Return ONLY valid JSON with exactly these keys:
   "budget_min": integer|null,
   "budget_max": integer|null,
   "budget_stretch": integer|null,
+  "gpu_model_exact": string|null,
+  "gpu_vram_exact_gb": integer|null,
+  "ram_exact_gb": integer|null,
   "ram_min": integer|null,
+  "storage_exact_gb": integer|null,
+  "storage_min_gb": integer|null,
   "screen_inches": number|null,
   "wants_touch": boolean,
   "wants_nvidia": boolean,
   "prefers_lightweight": boolean,
+  "strict_hardware": boolean,
   "notes": string
 }
 

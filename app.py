@@ -17,7 +17,7 @@ except Exception:
 
 from src.inventory import load_google_sheet, load_uploaded_file, normalize_inventory
 from src.parser import ai_parse
-from src.scoring import rank_inventory, reason_for, specs_line, need_summary
+from src.scoring import rank_inventory, reason_for, specs_line, need_summary, constraint_summary
 from src.ai import generate_sales_message
 from src.benefits import build_benefits
 from src.utils import money
@@ -385,7 +385,7 @@ if go:
     else:
         with st.spinner("بفهم الاستخدام وبقارن السعر بالمواصفات..."):
             req = ai_parse(query)
-            ranked, meta = rank_inventory(inventory, req, top_n=4)
+            ranked, meta = rank_inventory(inventory, req, top_n=6)
 
         st.session_state.last_req = req
         st.session_state.last_ranked = ranked
@@ -399,82 +399,75 @@ if "last_req" in st.session_state:
     need = meta.get("need_profile", {})
 
     st.divider()
-    st.markdown("### فهمت طلب العميل")
-    st.info(need_summary(req, need))
+    st.markdown("### 🧠 فهمت طلب العميل كده")
+    chips = constraint_summary(req)
 
-    if req.get("budget_max"):
-        st.caption(f"الحد الأقصى: {money(req['budget_max'])}")
+    if req.get("strict_hardware"):
+        st.success("🔒 **بحث دقيق:** أي مواصفة صريحة طلبتها هتتطبق حرفيًا، من غير بدائل مخفية.")
+
+    st.info(need_summary(req, need))
+    if chips:
+        st.markdown("**الشروط المطبقة حرفيًا:** " + " · ".join(f"`{x}`" for x in chips))
+
     if meta.get("used_stretch"):
-        st.warning("استخدمت الزيادة فقط لأن العميل قال صراحة إنه ممكن يزود.")
+        st.warning("استخدمت الزيادة فقط لأن العميل قال صراحة إنه ممكن يزود الميزانية.")
 
     if ranked.empty:
-        st.error("مفيش جهاز متاح يطابق الشروط دي داخل الميزانية الحالية.")
+        if req.get("strict_hardware"):
+            st.error("مفيش جهاز **متاح في المخزون** مطابق 100% للمواصفات الصريحة دي.")
+            st.caption("النظام مش هيعرض GPU أو RAM مختلفة ويعتبرها مطابقة. غيّر الشرط فقط لو العميل موافق.")
+        else:
+            st.error("مفيش جهاز متاح يطابق الشروط دي داخل الميزانية الحالية.")
     else:
-        st.markdown('<div class="step-title"><span class="step-no">3</span> اختار الجهاز وابعت الرسالة</div>', unsafe_allow_html=True)
+        st.markdown("### ⭐ الترشيح الأساسي")
 
-        labels = ["🥇 الأنسب", "💰 بديل بقيمة ممتازة", "⚡ بديل أقوى", "اختيار إضافي"]
-
-        for pos, (idx, row) in enumerate(ranked.iterrows()):
+        def render_card(idx, row, pos=0, primary=False):
+            labels = ["⭐ الأنسب", "💰 قيمة ممتازة", "⚡ بديل إضافي"]
             with st.container(border=True):
-                l, r = st.columns([3.4, 1.2], vertical_alignment="top")
+                l, r = st.columns([3.5, 1.2], vertical_alignment="top")
                 with l:
-                    st.markdown(f'<div class="result-label">{labels[pos]}</div>', unsafe_allow_html=True)
+                    label = "✅ مطابق للمواصفات المطلوبة" if req.get("strict_hardware") else labels[min(pos, 2)]
+                    st.markdown(f'<div class="result-label">{label}</div>', unsafe_allow_html=True)
                     st.markdown(f'<div class="result-model">{row["model"]}</div>', unsafe_allow_html=True)
                     st.markdown(f'<div class="spec-line">{specs_line(row)}</div>', unsafe_allow_html=True)
-
-                    benefits = build_benefits(row, req)
-                    with st.expander("ليه الجهاز ده مناسب؟", expanded=(pos == 0)):
-                        for b in benefits[:5]:
-                            st.markdown(f'<div class="benefit-box">✓ {b}</div>', unsafe_allow_html=True)
-
-                    if bool(row.get("meets_needs")):
-                        st.markdown(
-                            '<div class="fit-box">✅ بيوصل للمستوى المطلوب من غير ما نبيع للعميل قوة زيادة ملهاش لازمة.</div>',
-                            unsafe_allow_html=True,
-                        )
-                    else:
-                        st.warning("قريب من المطلوب، لكن فيه نقطة أو أكتر أقل من المستوى المثالي.")
+                    st.markdown("**ليه مناسب للعميل؟**")
+                    for b in build_benefits(row, req)[:4]:
+                        st.markdown(f'<div class="benefit-box">✓ {b}</div>', unsafe_allow_html=True)
+                    st.caption(reason_for(row, req, need))
 
                 with r:
                     st.markdown(f'<div class="price">{money(row["price_egp"])}</div>', unsafe_allow_html=True)
                     st.markdown(f'<div class="match">تطابق {row["match_score"]:.0f}%</div>', unsafe_allow_html=True)
                     st.caption(f"المتاح: {int(row['qty'])}")
 
-                st.markdown("#### رسالة واتساب")
-                msg_col1, msg_col2 = st.columns([1, 2])
-                with msg_col1:
-                    style_label = st.selectbox(
-                        "شكل الرسالة",
-                        ["جذابة وبيعية", "مختصرة", "تقنية", "ودية"],
-                        key=f"style_{idx}",
-                        label_visibility="collapsed",
-                    )
-                style_map = {
-                    "جذابة وبيعية": "attractive",
-                    "مختصرة": "short",
-                    "تقنية": "technical",
-                    "ودية": "friendly",
-                }
-
-                with msg_col2:
-                    if st.button("✨ جهّز رسالة العميل", key=f"msgbtn_{idx}", use_container_width=True):
+                st.markdown("#### 📲 Message للعميل")
+                c1, c2 = st.columns([1.2, 2])
+                with c1:
+                    style_label = st.selectbox("الأسلوب", ["جذابة وبيعية", "مختصرة", "تقنية", "ودية"], key=f"style_{idx}", label_visibility="collapsed")
+                styles = {"جذابة وبيعية":"attractive","مختصرة":"short","تقنية":"technical","ودية":"friendly"}
+                with c2:
+                    if st.button("✨ اعمل Message بروفيشنال", key=f"msgbtn_{idx}", use_container_width=True, type="primary" if primary else "secondary"):
                         with st.spinner("بربط كل مواصفة بفائدتها للعميل..."):
                             st.session_state.sales_messages[f"msg_{idx}"] = generate_sales_message(
-                                row,
-                                req,
-                                message_style=style_map[style_label],
-                                shop_name=st.session_state.get("shop_name", ""),
+                                row, req, message_style=styles[style_label],
+                                shop_name=st.session_state.get("shop_name", "")
                             )
 
                 if f"msg_{idx}" in st.session_state.get("sales_messages", {}):
                     st.code(st.session_state.sales_messages[f"msg_{idx}"], language=None)
-                    st.caption("انسخ الرسالة من علامة Copy داخل المربع وابعتها على واتساب.")
+                    st.caption("استخدم علامة Copy من المربع وابعتها للعميل.")
+
+        items = list(ranked.iterrows())
+        first_idx, first_row = items[0]
+        render_card(first_idx, first_row, 0, primary=True)
+
+        if len(items) > 1:
+            with st.expander(f"عرض البدائل ({len(items)-1})"):
+                for pos, (idx, row) in enumerate(items[1:], start=1):
+                    render_card(idx, row, pos, primary=False)
 
         with st.expander("تفاصيل تقنية للترتيب"):
-            cols = [
-                "model", "cpu", "ram_gb", "storage_gb", "gpu", "gpu_vram_gb",
-                "screen_inches", "price_egp", "qty", "fit_score", "match_score", "meets_needs"
-            ]
+            cols = ["model","cpu","ram_gb","storage_gb","gpu","gpu_vram_gb","screen_inches","price_egp","qty","fit_score","match_score","meets_needs"]
             st.dataframe(ranked[cols], use_container_width=True, hide_index=True)
 
 with st.expander("📦 عرض المخزون الحالي"):
