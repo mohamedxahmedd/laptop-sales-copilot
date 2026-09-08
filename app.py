@@ -17,7 +17,15 @@ except Exception:
 
 from src.inventory import load_google_sheet, load_uploaded_file, normalize_inventory
 from src.parser import ai_parse
-from src.scoring import rank_inventory, reason_for, specs_line, need_summary, constraint_summary
+from src import scoring as scoring_engine
+rank_inventory = scoring_engine.rank_inventory
+reason_for = scoring_engine.reason_for
+specs_line = scoring_engine.specs_line
+need_summary = scoring_engine.need_summary
+
+# Backward-safe import: avoids a hard crash if Streamlit briefly serves a mixed
+# commit while files are updating. V4 scoring.py defines the real function.
+constraint_summary = getattr(scoring_engine, "constraint_summary", lambda req: [])
 from src.ai import generate_sales_message
 from src.benefits import build_benefits
 from src.utils import money

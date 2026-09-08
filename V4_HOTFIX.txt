@@ -1,0 +1,4 @@
+V4.0.1 hotfix
+- Fixes Streamlit ImportError for constraint_summary.
+- Makes app.py tolerant to mixed-file deploy states.
+- Re-ships the V4 scoring engine so exact GPU/RAM/SSD constraints are present.
