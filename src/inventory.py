@@ -8,13 +8,50 @@ import pandas as pd
 from .utils import clean_text, parse_number
 
 ALIASES = {
-    "model": ["model", "الموديل", "اﻟﻣودﯾل", "موديل", "device", "laptop"],
-    "specs": ["specs", "specifications", "المواصفات", "اﻟﻣوﺻﻔﺎت", "مواصفات"],
-    "qty": ["qty", "quantity", "stock", "العدد", "اﻟﻌدد", "كمية"],
-    "screen_inches": ["screen", "screen_inches", "الشاشه", "الشاشة", "اﻟﺷﺎﺷﮫ"],
-    "price_egp": ["price", "price_egp", "السعر", "اﻟﺳﻌر"],
+    "model": [
+        "model", "الموديل", "اﻟﻣودﯾل", "موديل", "device", "laptop",
+        "device model", "اسم الجهاز", "الجهاز", "اسم الموديل"
+    ],
+    "specs": [
+        "specs", "specifications", "المواصفات", "اﻟﻣوﺻﻔﺎت", "مواصفات",
+        "configuration", "config", "configuration/specs"
+    ],
+    "qty": [
+        "qty", "quantity", "stock", "العدد", "اﻟﻌدد", "كمية", "الكميه", "الكمية",
+        "available", "availability", "المتاح", "متاح"
+    ],
+    "screen_inches": [
+        "screen", "screen_inches", "screen size", "display", "display size",
+        "الشاشه", "الشاشة", "اﻟﺷﺎﺷﮫ", "حجم الشاشة"
+    ],
+    "price_egp": [
+        "price", "price_egp", "selling price", "sale price",
+        "السعر", "اﻟﺳﻌر", "سعر", "سعر البيع", "price egp"
+    ],
     "camera": ["camera", "الكاميرا", "اﻟﻛﺎﻣﯾرا"],
+    "cpu_direct": [
+        "cpu", "processor", "processor cpu", "المعالج", "بروسيسور", "البروسيسور"
+    ],
+    "ram_direct": [
+        "ram", "memory", "ram gb", "memory gb", "الرام", "رام", "الرامات", "رامات"
+    ],
+    "storage_direct": [
+        "storage", "ssd", "ssd gb", "hard", "hard disk", "disk",
+        "الهارد", "هارد", "مساحة", "التخزين"
+    ],
+    "gpu_direct": [
+        "gpu", "graphics", "graphics card", "vga", "video card",
+        "كارت الشاشة", "كارت شاشه", "كارت الشاشة / gpu", "كارت"
+    ],
+    "vram_direct": [
+        "vram", "gpu memory", "graphics memory", "vram gb",
+        "ذاكرة كارت الشاشة", "ذاكرة الكارت"
+    ],
+    "touch_direct": [
+        "touch", "touchscreen", "touch screen", "تاتش", "لمس", "شاشة تاتش"
+    ],
 }
+
 
 
 def _canon(s: str) -> str:
@@ -153,14 +190,85 @@ def load_uploaded_file(file) -> pd.DataFrame:
     raise ValueError("Supported files: CSV, XLSX, XLS")
 
 
+
+def _parse_capacity_gb(value):
+    """Parse RAM/storage values such as 16, 16GB, 512 GB, 1TB."""
+    text = clean_text(value).upper()
+    if not text:
+        return None
+    n = parse_number(text)
+    if n is None:
+        return None
+    if "TB" in text or "تيرا" in text:
+        n *= 1024
+    return float(n)
+
+
+def _parse_bool(value) -> bool:
+    t = clean_text(value).lower()
+    if not t:
+        return False
+    yes = {"1", "true", "yes", "y", "touch", "تاتش", "نعم", "اه", "أه", "ايوه", "أيوه"}
+    return t in yes or "touch" in t or "تاتش" in t
+
+
+def _build_specs_from_columns(df: pd.DataFrame) -> pd.Series:
+    """
+    Build a parseable specs string when the source sheet keeps CPU/RAM/SSD/GPU
+    in separate columns instead of one `specs` column.
+    """
+    preferred = [
+        "cpu_direct", "ram_direct", "storage_direct",
+        "gpu_direct", "vram_direct", "touch_direct"
+    ]
+    excluded = {
+        "model", "qty", "screen_inches", "price_egp", "camera", "specs"
+    }
+
+    # First use recognized hardware columns, then any remaining descriptive columns.
+    cols = [c for c in preferred if c in df.columns]
+    for c in df.columns:
+        if c not in excluded and c not in cols:
+            # Ignore completely empty columns.
+            try:
+                if df[c].map(clean_text).eq("").all():
+                    continue
+            except Exception:
+                pass
+            cols.append(c)
+
+    def row_to_specs(row):
+        parts = []
+        for c in cols:
+            val = clean_text(row.get(c))
+            if not val:
+                continue
+            label = str(c).replace("_direct", "").replace("_", " ")
+            parts.append(f"{label}: {val}")
+        return " | ".join(parts)
+
+    return df.apply(row_to_specs, axis=1)
+
+
 def normalize_inventory(df: pd.DataFrame) -> Tuple[pd.DataFrame, list[str]]:
     warnings = []
+    original_columns = [clean_text(c) for c in df.columns]
     df = map_columns(df.copy())
 
-    required = ["model", "specs"]
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing columns: {', '.join(missing)}")
+    # Model is the only truly mandatory field.
+    if "model" not in df.columns:
+        raise ValueError(
+            "Missing column: model. "
+            f"Detected columns: {', '.join(original_columns)}"
+        )
+
+    # The original PDF seed used one `specs` column, but many live inventory
+    # sheets split CPU/RAM/SSD/GPU into separate columns. Support both formats.
+    if "specs" not in df.columns:
+        df["specs"] = _build_specs_from_columns(df)
+        warnings.append(
+            "عمود specs غير موجود؛ تم تكوين المواصفات تلقائيًا من أعمدة الشيت."
+        )
 
     for c in ["qty", "screen_inches", "price_egp", "camera"]:
         if c not in df.columns:
@@ -174,12 +282,60 @@ def normalize_inventory(df: pd.DataFrame) -> Tuple[pd.DataFrame, list[str]]:
     df["price_egp"] = df["price_egp"].map(parse_number)
     df["camera"] = df["camera"].map(clean_text)
 
-    # Drop completely empty rows
+    # Drop completely empty rows.
     df = df[(df["model"] != "") | (df["specs"] != "")].reset_index(drop=True)
 
-    parsed = df.apply(lambda r: parse_specs(r["model"], r["specs"]), axis=1, result_type="expand")
+    parsed = df.apply(
+        lambda r: parse_specs(r["model"], r["specs"]),
+        axis=1,
+        result_type="expand",
+    )
     for c in parsed.columns:
         df[c] = parsed[c]
+
+    # Direct structured sheet columns are more reliable than re-parsing the
+    # synthesized specs string, so let them override parsed values when present.
+    if "cpu_direct" in df.columns:
+        direct = df["cpu_direct"].map(clean_text)
+        mask = direct != ""
+        df.loc[mask, "cpu"] = direct[mask]
+
+    if "ram_direct" in df.columns:
+        direct = df["ram_direct"].map(_parse_capacity_gb)
+        mask = direct.notna()
+        df.loc[mask, "ram_gb"] = direct[mask]
+
+    if "storage_direct" in df.columns:
+        direct = df["storage_direct"].map(_parse_capacity_gb)
+        mask = direct.notna()
+        df.loc[mask, "storage_gb"] = direct[mask]
+
+    if "gpu_direct" in df.columns:
+        def parse_direct_gpu(value):
+            text = clean_text(value)
+            if not text:
+                return ("", None)
+            return detect_gpu(text.upper())
+
+        gpu_parsed = df["gpu_direct"].map(parse_direct_gpu)
+        direct_gpu = gpu_parsed.map(lambda x: x[0])
+        direct_vram = gpu_parsed.map(lambda x: x[1])
+
+        mask = direct_gpu != ""
+        df.loc[mask, "gpu"] = direct_gpu[mask]
+
+        vmask = direct_vram.notna()
+        df.loc[vmask, "gpu_vram_gb"] = direct_vram[vmask]
+
+    if "vram_direct" in df.columns:
+        direct = df["vram_direct"].map(_parse_capacity_gb)
+        mask = direct.notna()
+        df.loc[mask, "gpu_vram_gb"] = direct[mask]
+
+    if "touch_direct" in df.columns:
+        direct = df["touch_direct"].map(_parse_bool)
+        # Explicit touch column should be authoritative when supplied.
+        df["touch"] = direct
 
     return df, warnings
 
