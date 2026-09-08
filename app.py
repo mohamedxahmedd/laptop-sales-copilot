@@ -226,11 +226,11 @@ def require_password():
 if not require_password():
     st.stop()
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def load_seed():
     return pd.read_csv(ROOT / "data" / "seed_inventory.csv")
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def load_google_cached(url, worksheet, auth_fingerprint):
     # auth_fingerprint is intentionally non-secret; it only invalidates the cache
     # when auth mode changes. Credentials themselves are read from environment/secrets.
@@ -285,12 +285,22 @@ with st.sidebar:
     if st.session_state.source == "Upload CSV / Excel":
         st.file_uploader("ملف المخزون", type=["csv", "xlsx", "xls"], key="uploaded_inventory")
     elif st.session_state.source == "Google Sheet":
+        if "google_sheet_url" not in st.session_state:
+            st.session_state["google_sheet_url"] = os.getenv("GOOGLE_SHEET_URL", "").strip()
+        if "worksheet_name" not in st.session_state:
+            st.session_state["worksheet_name"] = os.getenv("GOOGLE_SHEET_WORKSHEET", "").strip()
+
         st.text_input("Google Sheet URL", key="google_sheet_url")
         st.text_input("اسم الـSheet - اختياري", key="worksheet_name")
+
         if google_user_oauth_configured():
-            st.success("🔐 Google OAuth متصل — الشيت الـPrivate هيتقرأ بصلاحية Gmail بتاعك")
+            st.success("🔐 بيانات Google OAuth موجودة — القراءة هتتم بصلاحية Gmail بتاعك")
         else:
-            st.warning("Google OAuth مش متظبط في Secrets؛ الشيت لازم يكون Public لحد ما تضيف بيانات OAuth.")
+            st.warning("Google OAuth مش متظبط في Secrets.")
+
+        if st.button("🔄 تحديث المخزون من Google Sheet", use_container_width=True):
+            load_google_cached.clear()
+            st.rerun()
         st.caption("لو اللينك فيه gid=... وسيبت اسم الـSheet فاضي، السيستم هيفتح نفس الـtab الموجود في اللينك.")
 
     st.divider()
@@ -305,7 +315,10 @@ try:
         st.stop()
     inventory, warnings = result
 except Exception as e:
-    st.error(f"مشكلة في قراءة المخزون: {e}")
+    _msg = str(e).strip() or repr(e)
+    st.error(f"مشكلة في قراءة المخزون: {_msg}")
+    with st.expander("تفاصيل الخطأ التقنية"):
+        st.code(f"{type(e).__name__}: {repr(e)}")
     st.stop()
 
 st.markdown("""
