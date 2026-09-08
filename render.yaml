@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: laptop-sales-copilot
+    runtime: docker
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: SBG_API_KEY
+        sync: false
+      - key: ITI_BASE_URL
+        value: http://apiaccess.iti.net.eg/api/v1
+      - key: ITI_MODEL
+        value: deepseek.v3.2
+      - key: APP_PASSWORD
+        sync: false
