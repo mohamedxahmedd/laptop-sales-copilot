@@ -1,6 +1,4 @@
-
 from __future__ import annotations
-import io
 import re
 from pathlib import Path
 from typing import Optional, Tuple
@@ -18,8 +16,10 @@ ALIASES = {
     "camera": ["camera", "الكاميرا", "اﻟﻛﺎﻣﯾرا"],
 }
 
+
 def _canon(s: str) -> str:
     return re.sub(r"[\s_\-]+", "", clean_text(s).lower())
+
 
 def map_columns(df: pd.DataFrame) -> pd.DataFrame:
     rename = {}
@@ -32,8 +32,9 @@ def map_columns(df: pd.DataFrame) -> pd.DataFrame:
                 break
     return df.rename(columns=rename)
 
+
 def google_sheet_to_csv_url(url: str, worksheet_gid: Optional[str] = None) -> str:
-    # Works for sheets accessible without Google auth.
+    # Public/read-without-auth fallback only.
     if "docs.google.com/spreadsheets" not in url:
         return url
     m = re.search(r"/d/([^/]+)", url)
@@ -46,18 +47,102 @@ def google_sheet_to_csv_url(url: str, worksheet_gid: Optional[str] = None) -> st
         gid = gm.group(1) if gm else "0"
     return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
 
+
+def _gid_from_url(url: str) -> Optional[int]:
+    m = re.search(r"(?:[#?&]gid=)(\d+)", url or "")
+    return int(m.group(1)) if m else None
+
+
+def _values_to_dataframe(values: list[list[str]]) -> pd.DataFrame:
+    if not values:
+        return pd.DataFrame()
+
+    headers = [clean_text(x) for x in values[0]]
+    # Make empty/duplicate header cells safe for pandas/gspread-like tables.
+    seen = {}
+    safe_headers = []
+    for i, h in enumerate(headers):
+        base = h or f"column_{i+1}"
+        count = seen.get(base, 0)
+        seen[base] = count + 1
+        safe_headers.append(base if count == 0 else f"{base}_{count+1}")
+
+    width = len(safe_headers)
+    rows = []
+    for row in values[1:]:
+        padded = list(row[:width]) + [""] * max(0, width - len(row))
+        rows.append(padded[:width])
+    return pd.DataFrame(rows, columns=safe_headers)
+
+
+def google_user_oauth_configured() -> bool:
+    import os
+    return all((os.getenv(k, "").strip() for k in [
+        "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
+        "GOOGLE_REFRESH_TOKEN",
+    ]))
+
+
+def _user_oauth_gspread_client():
+    import os
+    import gspread
+    from google.oauth2.credentials import Credentials
+
+    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+    creds = Credentials(
+        token=None,
+        refresh_token=os.getenv("GOOGLE_REFRESH_TOKEN", "").strip(),
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=os.getenv("GOOGLE_CLIENT_ID", "").strip(),
+        client_secret=os.getenv("GOOGLE_CLIENT_SECRET", "").strip(),
+        scopes=scopes,
+    )
+    return gspread.authorize(creds)
+
+
 def load_google_sheet(
     url: str,
     worksheet_name: str = "",
     service_account_json: str = "",
 ) -> pd.DataFrame:
+    """
+    Load a Google Sheet using this priority:
+    1) User OAuth from GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN
+       (best for a private sheet shared with the user's Gmail account).
+    2) Legacy service-account file, if explicitly supplied.
+    3) Public CSV export fallback.
+
+    If worksheet_name is blank and the URL contains #gid=..., that exact tab is used.
+    """
+    worksheet_name = (worksheet_name or "").strip()
+    gid = _gid_from_url(url)
+
+    if google_user_oauth_configured():
+        gc = _user_oauth_gspread_client()
+        sh = gc.open_by_url(url)
+        if worksheet_name:
+            ws = sh.worksheet(worksheet_name)
+        elif gid is not None:
+            ws = sh.get_worksheet_by_id(gid)
+        else:
+            ws = sh.sheet1
+        return _values_to_dataframe(ws.get_all_values())
+
     if service_account_json:
         import gspread
         gc = gspread.service_account(filename=service_account_json)
         sh = gc.open_by_url(url)
-        ws = sh.worksheet(worksheet_name) if worksheet_name else sh.sheet1
-        return pd.DataFrame(ws.get_all_records())
+        if worksheet_name:
+            ws = sh.worksheet(worksheet_name)
+        elif gid is not None:
+            ws = sh.get_worksheet_by_id(gid)
+        else:
+            ws = sh.sheet1
+        return _values_to_dataframe(ws.get_all_values())
+
     return pd.read_csv(google_sheet_to_csv_url(url))
+
 
 def load_uploaded_file(file) -> pd.DataFrame:
     name = file.name.lower()
@@ -66,6 +151,7 @@ def load_uploaded_file(file) -> pd.DataFrame:
     if name.endswith((".xlsx", ".xls")):
         return pd.read_excel(file)
     raise ValueError("Supported files: CSV, XLSX, XLS")
+
 
 def normalize_inventory(df: pd.DataFrame) -> Tuple[pd.DataFrame, list[str]]:
     warnings = []
@@ -97,23 +183,21 @@ def normalize_inventory(df: pd.DataFrame) -> Tuple[pd.DataFrame, list[str]]:
 
     return df, warnings
 
+
 def parse_specs(model: str, specs: str) -> dict:
     text = f"{model} {specs}".upper().replace("\\", " / ")
     text = re.sub(r"\s+", " ", text)
 
     touch = "TOUCH" in text or "X360" in text
 
-    # RAM / storage: prefer numeric chunks around separators.
     nums = [int(x) for x in re.findall(r"(?<!\d)(4|8|16|24|32|48|64|128|256|512|1024|2048)(?!\d)", specs.upper())]
     ram = None
     storage = None
-    # Common sheet format is CPU - RAM - SSD - GPU
     candidates_ram = [n for n in nums if n in {4, 8, 16, 24, 32, 48, 64, 128}]
     candidates_storage = [n for n in nums if n in {128, 256, 512, 1024, 2048}]
     if candidates_ram:
         ram = candidates_ram[0]
     if candidates_storage:
-        # avoid taking 128 CPU fragments; generally the last storage-like value before GPU
         storage = candidates_storage[-1]
         if ram == 128 and len(candidates_ram) > 1:
             ram = candidates_ram[1]
@@ -129,6 +213,7 @@ def parse_specs(model: str, specs: str) -> dict:
         "storage_gb": storage,
         "touch": touch,
     }
+
 
 def detect_cpu(text: str) -> str:
     patterns = [
@@ -146,6 +231,7 @@ def detect_cpu(text: str) -> str:
         if m:
             return re.sub(r"\s+", " ", m.group(1)).strip()
     return "Unknown"
+
 
 def detect_gpu(text: str):
     patterns = [
@@ -178,7 +264,6 @@ def detect_gpu(text: str):
             break
 
     vram = default_vram
-    # Search explicit memory after GPU-ish area: "4G", "6GB", "8G".
     mems = re.findall(r"(?<!\d)(2|4|6|8|12|16)\s*G(?:B)?\b", text)
     if mems and gpu not in {"IRIS XE", "IRIS PLUS", "UHD GRAPHICS", "RADEON GRAPHICS"}:
         vram = int(mems[-1])

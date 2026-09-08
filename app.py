@@ -15,7 +15,7 @@ try:
 except Exception:
     pass
 
-from src.inventory import load_google_sheet, load_uploaded_file, normalize_inventory
+from src.inventory import load_google_sheet, load_uploaded_file, normalize_inventory, google_user_oauth_configured
 from src.parser import ai_parse
 from src import scoring as scoring_engine
 rank_inventory = scoring_engine.rank_inventory
@@ -230,8 +230,10 @@ def load_seed():
     return pd.read_csv(ROOT / "data" / "seed_inventory.csv")
 
 @st.cache_data(ttl=60, show_spinner=False)
-def load_google_cached(url, worksheet, sa_path):
-    return load_google_sheet(url, worksheet, sa_path)
+def load_google_cached(url, worksheet, auth_fingerprint):
+    # auth_fingerprint is intentionally non-secret; it only invalidates the cache
+    # when auth mode changes. Credentials themselves are read from environment/secrets.
+    return load_google_sheet(url, worksheet)
 
 def get_inventory():
     default_source = os.getenv("DEFAULT_INVENTORY_SOURCE", "PDF seed")
@@ -250,8 +252,8 @@ def get_inventory():
         if not url:
             return None, ["حط لينك Google Sheet من الإعدادات."]
         worksheet = st.session_state.get("worksheet_name", "") or os.getenv("GOOGLE_SHEET_WORKSHEET", "")
-        sa_path = st.session_state.get("service_account_path", "") or os.getenv("GOOGLE_SERVICE_ACCOUNT_PATH", "")
-        raw = load_google_cached(url, worksheet.strip(), sa_path.strip())
+        auth_mode = "user-oauth" if google_user_oauth_configured() else "public"
+        raw = load_google_cached(url, worksheet.strip(), auth_mode)
     return normalize_inventory(raw)
 
 from src.iti_api import is_configured as iti_configured, model_name as iti_model
@@ -270,9 +272,13 @@ with st.sidebar:
     st.caption("الإعدادات مش محتاج تفتحها أثناء البيع العادي.")
 
     st.subheader("المخزون")
+    source_options = ["PDF seed", "Upload CSV / Excel", "Google Sheet"]
+    if "source" not in st.session_state:
+        _default_source = os.getenv("DEFAULT_INVENTORY_SOURCE", "PDF seed")
+        st.session_state["source"] = _default_source if _default_source in source_options else "PDF seed"
     st.selectbox(
         "مصدر المخزون",
-        ["PDF seed", "Upload CSV / Excel", "Google Sheet"],
+        source_options,
         key="source",
     )
     if st.session_state.source == "Upload CSV / Excel":
@@ -280,7 +286,11 @@ with st.sidebar:
     elif st.session_state.source == "Google Sheet":
         st.text_input("Google Sheet URL", key="google_sheet_url")
         st.text_input("اسم الـSheet - اختياري", key="worksheet_name")
-        st.text_input("Service account JSON path - لو Private", key="service_account_path")
+        if google_user_oauth_configured():
+            st.success("🔐 Google OAuth متصل — الشيت الـPrivate هيتقرأ بصلاحية Gmail بتاعك")
+        else:
+            st.warning("Google OAuth مش متظبط في Secrets؛ الشيت لازم يكون Public لحد ما تضيف بيانات OAuth.")
+        st.caption("لو اللينك فيه gid=... وسيبت اسم الـSheet فاضي، السيستم هيفتح نفس الـtab الموجود في اللينك.")
 
     st.divider()
     st.subheader("رسالة العميل")
