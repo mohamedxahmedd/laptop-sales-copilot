@@ -15,7 +15,8 @@ try:
 except Exception:
     pass
 
-from src.inventory import load_google_sheet, load_uploaded_file, normalize_inventory, google_user_oauth_configured
+from src.inventory import load_uploaded_file, normalize_inventory
+from src.google_sheet_oauth import load_google_sheet, google_user_oauth_configured
 from src.parser import ai_parse
 from src import scoring as scoring_engine
 rank_inventory = scoring_engine.rank_inventory
