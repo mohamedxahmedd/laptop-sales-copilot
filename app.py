@@ -15,8 +15,12 @@ try:
 except Exception:
     pass
 
-from src.inventory import load_uploaded_file, normalize_inventory
-from src.google_sheet_oauth import load_google_sheet, google_user_oauth_configured
+from src.live_inventory import (
+    load_google_sheet,
+    load_uploaded_file,
+    normalize_inventory,
+    google_user_oauth_configured,
+)
 from src.parser import ai_parse
 from src import scoring as scoring_engine
 rank_inventory = scoring_engine.rank_inventory
@@ -33,12 +37,16 @@ from src.utils import money
 
 ROOT = Path(__file__).parent
 
+APP_BUILD = "4.4.4"
+
 st.set_page_config(
     page_title="Laptop Sales Copilot",
     page_icon="💻",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+
+st.caption(f"Build {APP_BUILD} · Live Google Sheet importer")
 
 st.markdown("""
 <style>
@@ -215,7 +223,7 @@ def require_password():
         return True
     st.markdown("## 🔐 دخول")
     entered = st.text_input("كلمة السر", type="password")
-    if st.button("دخول", use_container_width=True, type="primary"):
+    if st.button("دخول", width="stretch", type="primary"):
         if entered == password:
             st.session_state.authed = True
             st.rerun()
@@ -298,7 +306,7 @@ with st.sidebar:
         else:
             st.warning("Google OAuth مش متظبط في Secrets.")
 
-        if st.button("🔄 تحديث المخزون من Google Sheet", use_container_width=True):
+        if st.button("🔄 تحديث المخزون من Google Sheet", width="stretch"):
             load_google_cached.clear()
             st.rerun()
         st.caption("لو اللينك فيه gid=... وسيبت اسم الـSheet فاضي، السيستم هيفتح نفس الـtab الموجود في اللينك.")
@@ -387,7 +395,7 @@ with tab_quick:
             key="quick_level",
         )
 
-    if st.button("استخدم الاختيار السريع", key="build_quick", use_container_width=True):
+    if st.button("استخدم الاختيار السريع", key="build_quick", width="stretch"):
         level_phrase = {
             "عادي / متوسط": "",
             "خفيف / طالب": "استخدام خفيف طالب",
@@ -409,7 +417,7 @@ if st.session_state.get("query_message", "").strip():
     query = st.session_state.query_message.strip()
 
 st.markdown('<div class="step-title"><span class="step-no">2</span> هات الترشيحات</div>', unsafe_allow_html=True)
-go = st.button("🔎 رشّحلي الأنسب", type="primary", use_container_width=True)
+go = st.button("🔎 رشّحلي الأنسب", type="primary", width="stretch")
 
 if go:
     if not query:
@@ -499,7 +507,7 @@ if "last_req" in st.session_state:
                         if st.button(
                             "✨ جهّز Message",
                             key=f"msgbtn_{idx}",
-                            use_container_width=True,
+                            width="stretch",
                             type="primary" if primary else "secondary",
                         ):
                             with st.spinner("بكتب رسالة مناسبة لنوع طلب العميل..."):
@@ -515,7 +523,7 @@ if "last_req" in st.session_state:
                         if st.button(
                             "🔥 صياغة أقوى",
                             key=f"regen_{idx}",
-                            use_container_width=True,
+                            width="stretch",
                             disabled=msg_key not in st.session_state.get("sales_messages", {}),
                         ):
                             with st.spinner("بكتب زاوية بيع أقوى ومختلفة..."):
@@ -543,11 +551,11 @@ if "last_req" in st.session_state:
 
         with st.expander("تفاصيل تقنية للترتيب"):
             cols = ["model","cpu","ram_gb","storage_gb","gpu","gpu_vram_gb","screen_inches","price_egp","qty","fit_score","match_score","meets_needs"]
-            st.dataframe(ranked[cols], use_container_width=True, hide_index=True)
+            st.dataframe(ranked[cols], width="stretch", hide_index=True)
 
 with st.expander("📦 عرض المخزون الحالي"):
     st.dataframe(
         inventory[["model", "specs", "qty", "screen_inches", "price_egp"]],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
