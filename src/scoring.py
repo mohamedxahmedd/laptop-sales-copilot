@@ -175,7 +175,13 @@ def infer_need_profile(req: Dict) -> Dict:
     elif level == "heavy":
         need["cpu"] = min(100, need["cpu"] + 7)
         need["gpu"] = min(100, need["gpu"] + 8)
-        need["ram"] = max(need["ram"], 24)
+        # "قوي للألعاب" should primarily raise GPU/CPU expectations.
+        # 16GB can still be a valid strong-gaming configuration; don't force 24GB
+        # and accidentally rank a weaker workstation GPU above a stronger gaming GPU.
+        if "gaming" in cases:
+            need["ram"] = max(need["ram"], 16)
+        else:
+            need["ram"] = max(need["ram"], 24)
     elif level == "extreme":
         need["cpu"] = min(100, need["cpu"] + 12)
         need["gpu"] = min(100, need["gpu"] + 12)
@@ -220,6 +226,36 @@ def _capacity_sufficiency(actual: float, target: float) -> float:
 def _is_integrated_gpu(gpu: str) -> bool:
     t = (gpu or "").upper()
     return any(x in t for x in ["IRIS", "UHD", "RADEON GRAPHICS", "INTEGRATED", "UNKNOWN"])
+
+
+def gaming_gpu_modifier(gpu: str, req: Dict) -> float:
+    """
+    Generic gaming recommendations should prefer gaming-oriented GeForce GPUs
+    over workstation cards when both can satisfy the request.
+    This modifier is NOT applied when the customer explicitly asked for an exact GPU.
+    """
+    if req.get("gpu_model_exact"):
+        return 0.0
+
+    cases = req.get("use_cases") or []
+    if "gaming" not in cases:
+        return 0.0
+
+    t = (gpu or "").upper()
+
+    if "GEFORCE" in t or re.search(r"\bRTX\s*(20|30|40)\d{2}\b", t):
+        return 14.0
+
+    # RTX A-series/T-series/Quadro are workstation-oriented; they can game,
+    # but shouldn't automatically beat a comparable GeForce for a gaming-first customer.
+    if re.search(r"\bA(?:500|1000|2000|3000|4000|4500|5000|5500)\b", t) or "RTX A" in t:
+        return -8.0
+    if re.search(r"\bT(?:600|1000|1200|2000)\b", t) or "QUADRO" in t or "P1000" in t:
+        return -12.0
+    if _is_integrated_gpu(t):
+        return -24.0
+
+    return 0.0
 
 def canonical_gpu_name(value: str) -> str:
     t = (value or "").upper().replace("NVIDIA", "").replace("GEFORCE", "").replace("QUADRO", "")
@@ -380,8 +416,11 @@ def rank_inventory(df: pd.DataFrame, req: Dict, top_n=5) -> Tuple[pd.DataFrame, 
         price_fit = _price_score(r["price_egp"], budget_for_score, prices)
         overkill = _overkill_penalty(c, g, ram, storage, need, r["price_egp"], prices)
 
-        # Fit dominates, but after a machine is "enough", price/value determines the winner.
-        total = fit * 0.78 + price_fit * 0.22 - overkill - nvidia_penalty
+        # Fit dominates, but use-case suitability matters too.
+        # For gaming, a gaming-oriented GeForce GPU should not lose to a workstation GPU
+        # just because the workstation happens to be slightly cheaper.
+        use_case_modifier = gaming_gpu_modifier(r["gpu"], req)
+        total = fit * 0.78 + price_fit * 0.22 - overkill - nvidia_penalty + use_case_modifier
 
         meets = (
             cpu_fit >= 86 and
@@ -401,6 +440,7 @@ def rank_inventory(df: pd.DataFrame, req: Dict, top_n=5) -> Tuple[pd.DataFrame, 
             "gpu_fit": gpu_fit,
             "ram_fit": ram_fit,
             "price_fit": price_fit,
+            "use_case_modifier": use_case_modifier,
         })
 
     scored = pd.DataFrame(scored_rows).set_index("idx")
@@ -408,7 +448,7 @@ def rank_inventory(df: pd.DataFrame, req: Dict, top_n=5) -> Tuple[pd.DataFrame, 
         filtered[col] = filtered.index.map(scored[col])
 
     ordered = filtered.sort_values(
-        ["meets_needs", "match_score", "price_egp"],
+        ["match_score", "meets_needs", "price_egp"],
         ascending=[False, False, True],
     )
 

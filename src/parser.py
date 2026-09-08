@@ -8,7 +8,7 @@ from .utils import clean_text
 USE_CASE_KEYWORDS = {
     "gaming": [
         "gaming", "جيمينج", "العاب", "ألعاب", "game", "games", "valorant", "warzone",
-        "fortnite", "gta", "فيفا", "fc 25", "pubg", "ببجي"
+        "fortnite", "gta", "فيفا", "fc 25", "fc25", "fc 26", "fc26", "fc 27", "fc27", "pubg", "ببجي"
     ],
     "programming": [
         "programming", "coding", "developer", "development", "برمجه", "برمجة", "مطور", "برامج برمجه", "برامج برمجة",
@@ -144,21 +144,36 @@ def detect_software(text: str) -> List[str]:
 
 def detect_workload_level(text: str) -> str:
     t = _normalize(text)
+
+    gaming_context = any(k in t for k in [
+        "gaming", "جيمينج", "العاب", "العاب", "game", "فيفا", "fc25", "fc26", "fc27", "fc 25", "fc 26", "fc 27"
+    ])
+
     if any(k in t for k in [
-        "تقيل جدا", "تقيلة جدا", "احترافي جدا", "professional heavy", "8k", "مشاريع ضخمه",
-        "مشاريع ضخمة", "ريندر تقيل جدا", "heavy rendering", "extreme"
+        "تقيل جدا", "تقيله جدا", "تقيلة جدا", "احترافي جدا", "professional heavy",
+        "8k", "مشاريع ضخمه", "مشاريع ضخمة", "ريندر تقيل جدا", "heavy rendering", "extreme"
     ]):
         return "extreme"
+
+    # "قوي للألعاب" is an explicit performance request. Don't treat it as ordinary gaming.
+    if gaming_context and any(k in t for k in [
+        "قوي", "جامد", "high performance", "powerful", "العاب تقيله", "العاب تقيلة",
+        "يشغل كل الالعاب", "يشغل العاب حديثه", "يشغل العاب حديثة"
+    ]):
+        return "heavy"
+
     if any(k in t for k in [
         "تقيل", "تقيله", "تقيلة", "احترافي", "professional", "4k", "ريندر", "render",
         "مشاريع كبيره", "مشاريع كبيرة", "heavy", "virtual machine", "vms"
     ]):
         return "heavy"
+
     if any(k in t for k in [
         "خفيف", "خفيفه", "خفيفة", "بسيط", "بسيطه", "بسيطة", "طالب", "student",
-        "تعلم", "learning", "basic", "light"
+        "تعلم", "learning", "basic", "light", "مذاكره", "مذاكرة"
     ]):
         return "light"
+
     return "balanced"
 
 GPU_PATTERNS = [

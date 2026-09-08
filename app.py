@@ -489,12 +489,12 @@ if "last_req" in st.session_state:
 
                     with b2:
                         if st.button(
-                            "🔄 نسخة مختلفة",
+                            "🔥 صياغة أقوى",
                             key=f"regen_{idx}",
                             use_container_width=True,
                             disabled=msg_key not in st.session_state.get("sales_messages", {}),
                         ):
-                            with st.spinner("بعمل صياغة مختلفة تمامًا..."):
+                            with st.spinner("بكتب زاوية بيع أقوى ومختلفة..."):
                                 old_message = st.session_state.sales_messages.get(msg_key, "")
                                 st.session_state.sales_messages[msg_key] = generate_sales_message(
                                     row,
@@ -506,7 +506,7 @@ if "last_req" in st.session_state:
 
                 if msg_key in st.session_state.get("sales_messages", {}):
                     st.code(st.session_state.sales_messages[msg_key], language=None)
-                    st.caption("مش عاجباك الصياغة؟ دوس «نسخة مختلفة» وهتطلع Opening وترتيب وCTA مختلفين.")
+                    st.caption("لو الصياغة مش على مزاجك، دوس «صياغة أقوى» وهيعيد كتابة الرسالة من زاوية بيع مختلفة من غير Template ثابت.")
 
         items = list(ranked.iterrows())
         first_idx, first_row = items[0]
