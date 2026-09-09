@@ -319,6 +319,68 @@ def _parse_capacity_gb(value):
     return float(number)
 
 
+
+def _parse_price_egp(value):
+    """
+    Parse laptop prices robustly.
+
+    The live sheet may store prices in "thousands of EGP", e.g.:
+      37      -> 37,000 EGP
+      37.5    -> 37,500 EGP
+      49,5    -> 49,500 EGP
+    while normal full prices such as 37,500 / 37500 stay unchanged.
+
+    In a laptop inventory, a positive price below 1,000 EGP is treated as
+    "thousands" because that is how this sheet represents selling prices.
+    """
+    text = clean_text(value)
+    if not text or text.lower() in {"nan", "none", "null"}:
+        return None
+
+    s = (
+        text.replace("EGP", "")
+        .replace("egp", "")
+        .replace("جنيه", "")
+        .replace("ج.م", "")
+        .strip()
+    )
+
+    explicit_thousands = bool(
+        re.search(r"(?:\bK\b|الف|ألف)", s, flags=re.I)
+    )
+    s = re.sub(r"(?:\bK\b|الف|ألف)", "", s, flags=re.I).strip()
+
+    # Arabic decimal separator.
+    s = s.replace("٫", ".")
+
+    # Handle comma intelligently:
+    # 37,500 => 37500
+    # 37,5   => 37.5
+    # 1,250,000 => 1250000
+    if "," in s or "،" in s:
+        s = s.replace("،", ",")
+        if re.fullmatch(r"-?\d{1,3}(?:,\d{3})+", s):
+            s = s.replace(",", "")
+        elif re.fullmatch(r"-?\d+,\d{1,2}", s):
+            s = s.replace(",", ".")
+        else:
+            s = s.replace(",", "")
+
+    match = re.search(r"-?\d+(?:\.\d+)?", s)
+    if not match:
+        return None
+
+    number = float(match.group())
+
+    if explicit_thousands:
+        number *= 1000
+    elif 0 < abs(number) < 1000:
+        # The live laptop sheet stores e.g. 37 / 37.5 to mean 37k / 37.5k.
+        number *= 1000
+
+    return float(number)
+
+
 def _parse_bool(value) -> bool:
     t = clean_text(value).lower()
     return t in {"1", "true", "yes", "y", "touch", "تاتش", "نعم", "اه", "أه", "ايوه", "أيوه"} or "touch" in t or "تاتش" in t
@@ -372,7 +434,29 @@ def normalize_inventory(df: pd.DataFrame) -> Tuple[pd.DataFrame, list[str]]:
     df["specs"] = df["specs"].map(clean_text)
     df["qty"] = df["qty"].map(parse_number).fillna(0).astype(int)
     df["screen_inches"] = df["screen_inches"].map(parse_number)
-    df["price_egp"] = df["price_egp"].map(parse_number)
+
+    # Keep the exact sheet value for diagnostics, then normalize to real EGP.
+    df["price_raw"] = df["price_egp"].map(clean_text)
+    parsed_prices = df["price_egp"].map(_parse_price_egp)
+
+    scaled_count = 0
+    for raw, parsed in zip(df["price_raw"], parsed_prices):
+        raw_number = parse_number(raw)
+        if (
+            parsed is not None
+            and raw_number is not None
+            and 0 < abs(raw_number) < 1000
+            and abs(parsed) >= 1000
+        ):
+            scaled_count += 1
+
+    df["price_egp"] = parsed_prices
+    if scaled_count:
+        warnings.append(
+            f"تم تحويل {scaled_count} سعر من صيغة الآلاف في الشيت "
+            "(مثال 37.5 = 37,500 جنيه)."
+        )
+
     df["camera"] = df["camera"].map(clean_text)
 
     df = df[(df["model"] != "") | (df["specs"] != "")].reset_index(drop=True)

@@ -37,7 +37,7 @@ from src.utils import money
 
 ROOT = Path(__file__).parent
 
-APP_BUILD = "4.4.4"
+APP_BUILD = "4.4.5"
 
 st.set_page_config(
     page_title="Laptop Sales Copilot",
